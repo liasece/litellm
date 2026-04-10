@@ -1784,7 +1784,7 @@ class ProxyBaseLLMRequestProcessing:
             # Skip the first message_start from upstream since we already sent one
             if not first_chunk_seen:
                 first_chunk_seen = True
-                if "message_start" in chunk:
+                if isinstance(chunk, str) and "message_start" in chunk:
                     continue
             yield chunk
 
