@@ -5384,12 +5384,14 @@ class Router:
                     e.message += "\n{}".format(error_message)
             if fallbacks is not None and model_group is not None:
                 verbose_router_logger.debug(f"inside model fallbacks: {fallbacks}")
+                resolved_model_group = self._get_model_from_alias(model=model_group)
                 (
                     fallback_model_group,
                     generic_fallback_idx,
                 ) = get_fallback_model_group(
                     fallbacks=fallbacks,  # if fallbacks = [{"gpt-3.5-turbo": ["claude-3-haiku"]}]
                     model_group=cast(str, model_group),
+                    resolved_model_group=resolved_model_group,
                 )
                 ## if none, check for generic fallback
                 if fallback_model_group is None and generic_fallback_idx is not None:

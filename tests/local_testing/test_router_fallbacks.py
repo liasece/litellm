@@ -1534,6 +1534,104 @@ def test_get_fallback_model_group():
     assert fallback_model_group == ["claude-3-haiku"]
 
 
+def test_get_fallback_model_group_prefers_alias_over_resolved_model_group():
+    from litellm.router_utils.fallback_event_handlers import get_fallback_model_group
+
+    fallback_model_group, _ = get_fallback_model_group(
+        fallbacks=[
+            {"alias-model": ["alias-fallback"]},
+            {"real-model": ["real-fallback"]},
+            {"*": ["generic-fallback"]},
+        ],
+        model_group="alias-model",
+        resolved_model_group="real-model",
+    )
+
+    assert fallback_model_group == ["alias-fallback"]
+
+
+def test_get_fallback_model_group_uses_resolved_model_group_when_alias_missing():
+    from litellm.router_utils.fallback_event_handlers import get_fallback_model_group
+
+    fallback_model_group, _ = get_fallback_model_group(
+        fallbacks=[
+            {"real-model": ["real-fallback"]},
+            {"*": ["generic-fallback"]},
+        ],
+        model_group="alias-model",
+        resolved_model_group="real-model",
+    )
+
+    assert fallback_model_group == ["real-fallback"]
+
+
+def test_get_fallback_model_group_falls_back_to_generic_after_alias_and_resolved_miss():
+    from litellm.router_utils.fallback_event_handlers import get_fallback_model_group
+
+    fallback_model_group, _ = get_fallback_model_group(
+        fallbacks=[{"*": ["generic-fallback"]}],
+        model_group="alias-model",
+        resolved_model_group="real-model",
+    )
+
+    assert fallback_model_group == ["generic-fallback"]
+
+
+def test_router_fallbacks_use_resolved_model_group_for_alias():
+    router = Router(
+        model_list=[
+            {
+                "model_name": "real-model",
+                "litellm_params": {"model": "real-model", "api_key": "bad-key"},
+            },
+            {
+                "model_name": "real-fallback",
+                "litellm_params": {
+                    "model": "real-fallback",
+                    "mock_response": "resolved fallback hit",
+                },
+            },
+        ],
+        model_group_alias={"alias-model": "real-model"},
+        fallbacks=[{"real-model": ["real-fallback"]}],
+    )
+
+    response = router.completion(
+        model="alias-model",
+        messages=[{"role": "user", "content": "hi"}],
+        mock_testing_fallbacks=True,
+    )
+
+    assert response["choices"][0]["message"]["content"] == "resolved fallback hit"
+
+
+def test_router_fallbacks_keep_non_alias_behavior():
+    router = Router(
+        model_list=[
+            {
+                "model_name": "real-model",
+                "litellm_params": {"model": "real-model", "api_key": "bad-key"},
+            },
+            {
+                "model_name": "real-fallback",
+                "litellm_params": {
+                    "model": "real-fallback",
+                    "mock_response": "non alias fallback hit",
+                },
+            },
+        ],
+        fallbacks=[{"real-model": ["real-fallback"]}],
+    )
+
+    response = router.completion(
+        model="real-model",
+        messages=[{"role": "user", "content": "hi"}],
+        mock_testing_fallbacks=True,
+    )
+
+    assert response["choices"][0]["message"]["content"] == "non alias fallback hit"
+
+
 def test_fallbacks_with_different_messages():
     router = Router(
         model_list=[

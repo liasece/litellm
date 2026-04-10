@@ -42,42 +42,67 @@ def _check_stripped_model_group(model_group: str, fallback_key: str) -> bool:
     return False
 
 
-def get_fallback_model_group(
+def _lookup_fallback_model_group(
     fallbacks: List[Any], model_group: str
+) -> Tuple[Optional[List[str]], Optional[int]]:
+    generic_fallback_idx: Optional[int] = None
+    stripped_model_fallback: Optional[List[str]] = None
+    fallback_model_group: Optional[List[str]] = None
+
+    for idx, item in enumerate(fallbacks):
+        if isinstance(item, dict):
+            fallback_key = list(item.keys())[0]
+            if fallback_key == model_group:
+                fallback_model_group = item[model_group]
+                break
+            elif _check_stripped_model_group(
+                model_group=model_group, fallback_key=fallback_key
+            ):
+                stripped_model_fallback = item[fallback_key]
+            elif fallback_key == "*":
+                generic_fallback_idx = idx
+        elif isinstance(item, str):
+            fallback_model_group = [item]
+            break
+
+    if fallback_model_group is None and stripped_model_fallback is not None:
+        fallback_model_group = stripped_model_fallback
+
+    return fallback_model_group, generic_fallback_idx
+
+
+def get_fallback_model_group(
+    fallbacks: List[Any],
+    model_group: str,
+    resolved_model_group: Optional[str] = None,
 ) -> Tuple[Optional[List[str]], Optional[int]]:
     """
     Returns:
     - fallback_model_group: List[str] of fallback model groups. example: ["gpt-4", "gpt-3.5-turbo"]
     - generic_fallback_idx: int of the index of the generic fallback in the fallbacks list.
 
-    Checks:
-    - exact match
-    - stripped model group match
-    - generic fallback
+    Lookup priority:
+    1. original model_group exact / stripped match
+    2. resolved_model_group exact / stripped match
+    3. generic fallback `*`
     """
-    generic_fallback_idx: Optional[int] = None
-    stripped_model_fallback: Optional[List[str]] = None
-    fallback_model_group: Optional[List[str]] = None
-    ## check for specific model group-specific fallbacks
-    for idx, item in enumerate(fallbacks):
-        if isinstance(item, dict):
-            if list(item.keys())[0] == model_group:  # check exact match
-                fallback_model_group = item[model_group]
-                break
-            elif _check_stripped_model_group(
-                model_group=model_group, fallback_key=list(item.keys())[0]
-            ):  # check generic fallback
-                stripped_model_fallback = item[list(item.keys())[0]]
-            elif list(item.keys())[0] == "*":  # check generic fallback
-                generic_fallback_idx = idx
-        elif isinstance(item, str):
-            fallback_model_group = [fallbacks.pop(idx)]  # returns single-item list
-    ## if none, check for generic fallback
-    if fallback_model_group is None:
-        if stripped_model_fallback is not None:
-            fallback_model_group = stripped_model_fallback
-        elif generic_fallback_idx is not None:
-            fallback_model_group = fallbacks[generic_fallback_idx]["*"]
+    fallback_model_group, generic_fallback_idx = _lookup_fallback_model_group(
+        fallbacks=fallbacks, model_group=model_group
+    )
+
+    if (
+        fallback_model_group is None
+        and resolved_model_group is not None
+        and resolved_model_group != model_group
+    ):
+        fallback_model_group, resolved_generic_fallback_idx = _lookup_fallback_model_group(
+            fallbacks=fallbacks, model_group=resolved_model_group
+        )
+        if generic_fallback_idx is None:
+            generic_fallback_idx = resolved_generic_fallback_idx
+
+    if fallback_model_group is None and generic_fallback_idx is not None:
+        fallback_model_group = fallbacks[generic_fallback_idx]["*"]
 
     return fallback_model_group, generic_fallback_idx
 
