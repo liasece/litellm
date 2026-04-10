@@ -27,10 +27,11 @@ class AnthropicResponsesStreamWrapper:
         self,
         responses_stream: Any,
         model: str,
+        message_id: str | None = None,
     ) -> None:
         self.responses_stream = responses_stream
         self.model = model
-        self._message_id: str = f"msg_{uuid.uuid4()}"
+        self._message_id: str = message_id or f"msg_{uuid.uuid4()}"
         self._current_block_index: int = -1
         # Map item_id -> content_block_index so we can stop the right block later
         self._item_id_to_block_index: Dict[str, int] = {}

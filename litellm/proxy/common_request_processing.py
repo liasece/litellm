@@ -1122,7 +1122,7 @@ class ProxyBaseLLMRequestProcessing:
                     # which returns a non-streaming dict even for streaming requests
                     if self._is_streaming_response(response):
                         selected_data_generator = (
-                            ProxyBaseLLMRequestProcessing.async_sse_data_generator(
+                            ProxyBaseLLMRequestProcessing.async_sse_data_generator_with_immediate_start(
                                 response=response,
                                 user_api_key_dict=user_api_key_dict,
                                 request_data=self.data,
@@ -1732,6 +1732,60 @@ class ProxyBaseLLMRequestProcessing:
             serialize_chunk=ProxyBaseLLMRequestProcessing.return_sse_chunk,
             serialize_error=lambda proxy_exc: f"{STREAM_SSE_DATA_PREFIX}{json.dumps({'error': proxy_exc.to_dict()})}\n\n",
         ):
+            yield chunk
+
+    @staticmethod
+    async def async_sse_data_generator_with_immediate_start(
+        response: Any,
+        user_api_key_dict: UserAPIKeyAuth,
+        request_data: dict,
+        proxy_logging_obj: ProxyLogging,
+    ) -> AsyncGenerator[str, None]:
+        """
+        Anthropic /messages streaming data generator that yields message_start immediately.
+
+        This prevents client-side first-chunk timeout retries by sending the initial
+        SSE event before waiting for upstream response data. The message_start event
+        is a valid Anthropic streaming event that signals the start of a message.
+        """
+        # Generate message_start immediately to prevent client timeout
+        message_id = f"msg_{uuid.uuid4()}"
+        model = request_data.get("model", "unknown")
+        message_start = {
+            "type": "message_start",
+            "message": {
+                "id": message_id,
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "model": model,
+                "stop_reason": None,
+                "stop_sequence": None,
+                "usage": {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                },
+            },
+        }
+        yield f"event: message_start\ndata: {json.dumps(message_start)}\n\n"
+
+        # Now yield the rest of the stream, skipping any message_start from upstream
+        first_chunk_seen = False
+        async for chunk in ProxyBaseLLMRequestProcessing.async_streaming_data_generator(
+            response=response,
+            user_api_key_dict=user_api_key_dict,
+            request_data=request_data,
+            proxy_logging_obj=proxy_logging_obj,
+            serialize_chunk=ProxyBaseLLMRequestProcessing.return_sse_chunk,
+            serialize_error=lambda proxy_exc: f"{STREAM_SSE_DATA_PREFIX}{json.dumps({'error': proxy_exc.to_dict()})}\n\n",
+        ):
+            # Skip the first message_start from upstream since we already sent one
+            if not first_chunk_seen:
+                first_chunk_seen = True
+                if "message_start" in chunk:
+                    continue
             yield chunk
 
     @staticmethod
