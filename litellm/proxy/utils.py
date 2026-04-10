@@ -5147,7 +5147,13 @@ def handle_exception_on_proxy(e: Exception) -> ProxyException:
     """
     from fastapi import status
 
-    verbose_proxy_logger.exception(f"Exception: {e}")
+    # 4xx errors are client-side issues (e.g. rate limit, auth), log at warning level
+    # 5xx errors are server-side issues, log at error level with traceback
+    _status_code = getattr(e, "status_code", None)
+    if _status_code is not None and 400 <= _status_code < 500:
+        verbose_proxy_logger.debug(f"Client error ({_status_code}): {e}")
+    else:
+        verbose_proxy_logger.exception(f"Exception: {e}")
 
     if isinstance(e, HTTPException):
         return ProxyException(
