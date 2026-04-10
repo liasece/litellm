@@ -17,6 +17,12 @@ RUN apk add --no-cache bash gcc py3-pip python3 python3-dev openssl openssl-dev
 
 RUN python -m pip install build
 
+# Copy dependency manifest first so dependency wheels can be cached independently
+COPY requirements.txt ./
+
+# install dependencies as wheels
+RUN pip wheel --no-cache-dir --wheel-dir=/wheels/ -r requirements.txt
+
 # Copy the current directory contents into the container at /app
 COPY . .
 
@@ -32,9 +38,6 @@ RUN ls -1 dist/*.whl | head -1
 
 # Install the package
 RUN pip install dist/*.whl
-
-# install dependencies as wheels
-RUN pip wheel --no-cache-dir --wheel-dir=/wheels/ -r requirements.txt
 
 # ensure pyjwt is used, not jwt
 RUN pip uninstall jwt -y
