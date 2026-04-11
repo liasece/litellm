@@ -317,11 +317,20 @@ async def create_batch(  # noqa: PLR0915
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.create_batch(): Exception occured - {}".format(
-                str(e)
+        # 客户端错误 (4xx) 使用 debug 级别，服务器错误 (5xx) 使用 exception 级别
+        status_code = getattr(e, "status_code", 500)
+        if isinstance(status_code, int) and 400 <= status_code < 500:
+            verbose_proxy_logger.debug(
+                "litellm.proxy.proxy_server.create_batch(): Client error - {}".format(
+                    str(e)
+                )
             )
-        )
+        else:
+            verbose_proxy_logger.exception(
+                "litellm.proxy.proxy_server.create_batch(): Exception occured - {}".format(
+                    str(e)
+                )
+            )
         raise handle_exception_on_proxy(e)
 
 
@@ -572,11 +581,20 @@ async def retrieve_batch(  # noqa: PLR0915
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.retrieve_batch(): Exception occured - {}".format(
-                str(e)
+        # 客户端错误 (4xx) 使用 debug 级别，服务器错误 (5xx) 使用 exception 级别
+        status_code = getattr(e, "status_code", 500)
+        if isinstance(status_code, int) and 400 <= status_code < 500:
+            verbose_proxy_logger.debug(
+                "litellm.proxy.proxy_server.retrieve_batch(): Client error - {}".format(
+                    str(e)
+                )
             )
-        )
+        else:
+            verbose_proxy_logger.exception(
+                "litellm.proxy.proxy_server.retrieve_batch(): Exception occured - {}".format(
+                    str(e)
+                )
+            )
         raise handle_exception_on_proxy(e)
 
 
@@ -757,11 +775,20 @@ async def list_batches(
             original_exception=e,
             request_data={"after": after, "limit": limit},
         )
-        verbose_proxy_logger.error(
-            "litellm.proxy.proxy_server.retrieve_batch(): Exception occured - {}".format(
-                str(e)
+        # 客户端错误 (4xx) 使用 debug 级别，服务器错误 (5xx) 使用 error 级别
+        status_code = getattr(e, "status_code", 500)
+        if isinstance(status_code, int) and 400 <= status_code < 500:
+            verbose_proxy_logger.debug(
+                "litellm.proxy.proxy_server.list_batches(): Client error - {}".format(
+                    str(e)
+                )
             )
-        )
+        else:
+            verbose_proxy_logger.error(
+                "litellm.proxy.proxy_server.list_batches(): Exception occured - {}".format(
+                    str(e)
+                )
+            )
         raise handle_exception_on_proxy(e)
 
 
@@ -962,11 +989,20 @@ async def cancel_batch(
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.create_batch(): Exception occured - {}".format(
-                str(e)
+        # 客户端错误 (4xx) 使用 debug 级别，服务器错误 (5xx) 使用 exception 级别
+        status_code = getattr(e, "status_code", 500)
+        if isinstance(status_code, int) and 400 <= status_code < 500:
+            verbose_proxy_logger.debug(
+                "litellm.proxy.proxy_server.cancel_batch(): Client error - {}".format(
+                    str(e)
+                )
             )
-        )
+        else:
+            verbose_proxy_logger.exception(
+                "litellm.proxy.proxy_server.cancel_batch(): Exception occured - {}".format(
+                    str(e)
+                )
+            )
         raise handle_exception_on_proxy(e)
 
 

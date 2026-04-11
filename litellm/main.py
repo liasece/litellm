@@ -7712,7 +7712,7 @@ async def acount_tokens(
             model=model, provider=llm_provider_enum
         )
 
-        if provider_model_info is not None:
+        if provider_model_info is not None and litellm.skip_provider_token_counting is False:
             token_counter_instance = provider_model_info.get_token_counter()
             if (
                 token_counter_instance is not None

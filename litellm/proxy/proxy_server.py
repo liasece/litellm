@@ -8789,7 +8789,7 @@ async def token_counter(request: TokenCountRequest, call_endpoint: bool = False)
         if _model is not None:
             model_to_use = _model
 
-    if provider_counter is not None:
+    if provider_counter is not None and litellm.skip_provider_token_counting is False:
         if (
             provider_counter.should_use_token_counting_api(
                 custom_llm_provider=custom_llm_provider

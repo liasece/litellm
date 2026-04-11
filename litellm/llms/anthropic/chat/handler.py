@@ -1245,7 +1245,11 @@ class ModelResponseIterator:
             str_line = str_line[index:]
 
         if str_line.startswith("data:"):
-            data_json = json.loads(str_line[5:])
+            json_str = str_line[5:].strip()
+            if not json_str:
+                # 空 data chunk（流结束或心跳），返回空响应
+                return ModelResponseStream(id=self.response_id)
+            data_json = json.loads(json_str)
             return self.chunk_parser(chunk=data_json)
         else:
             return ModelResponseStream(id=self.response_id)

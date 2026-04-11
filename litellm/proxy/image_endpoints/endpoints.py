@@ -178,12 +178,21 @@ async def image_generation(
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
-        verbose_proxy_logger.error(
-            "litellm.proxy.proxy_server.image_generation(): Exception occured - {}".format(
-                str(e)
+        # 客户端错误 (4xx) 使用 debug 级别，服务器错误 (5xx) 使用 error 级别
+        status_code = getattr(e, "status_code", 500)
+        if isinstance(status_code, int) and 400 <= status_code < 500:
+            verbose_proxy_logger.debug(
+                "litellm.proxy.proxy_server.image_generation(): Client error - {}".format(
+                    str(e)
+                )
             )
-        )
-        verbose_proxy_logger.debug(traceback.format_exc())
+        else:
+            verbose_proxy_logger.error(
+                "litellm.proxy.proxy_server.image_generation(): Exception occured - {}".format(
+                    str(e)
+                )
+            )
+            verbose_proxy_logger.debug(traceback.format_exc())
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "message", str(e)),

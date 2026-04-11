@@ -118,11 +118,20 @@ async def anthropic_response(  # noqa: PLR0915
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.anthropic_response(): Exception occured - {}".format(
-                str(e)
+        # 客户端错误 (4xx) 使用 debug 级别，服务器错误 (5xx) 使用 exception 级别
+        status_code = getattr(e, "status_code", 500)
+        if isinstance(status_code, int) and 400 <= status_code < 500:
+            verbose_proxy_logger.debug(
+                "litellm.proxy.proxy_server.anthropic_response(): Client error - {}".format(
+                    str(e)
+                )
             )
-        )
+        else:
+            verbose_proxy_logger.exception(
+                "litellm.proxy.proxy_server.anthropic_response(): Exception occured - {}".format(
+                    str(e)
+                )
+            )
 
         # Extract model_id from request metadata (same as success path)
         litellm_metadata = data.get("litellm_metadata", {}) or {}

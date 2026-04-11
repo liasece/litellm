@@ -277,6 +277,7 @@ ssl_ecdh_curve: Optional[
 ] = None  # Set to 'X25519' to disable PQC and improve performance
 disable_streaming_logging: bool = False
 disable_token_counter: bool = False
+skip_provider_token_counting: bool = False  # 跳过 provider token counting API，直接使用本地 tokenizer
 disable_add_transform_inline_image_block: bool = False
 disable_add_user_agent_to_request_tags: bool = False
 disable_anthropic_gemini_context_caching_transform: bool = False
