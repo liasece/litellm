@@ -4,11 +4,9 @@ Handler for the Anthropic v1/messages -> OpenAI Responses API path.
 Used when the target model is an OpenAI or Azure model.
 """
 
-import json
 from typing import Any, AsyncIterator, Coroutine, Dict, List, Optional, Union
 
 import litellm
-from litellm._uuid import uuid
 from litellm.types.llms.anthropic import AnthropicMessagesRequest
 from litellm.types.llms.anthropic_messages.anthropic_response import (
     AnthropicMessagesResponse,
@@ -21,49 +19,22 @@ from .transformation import LiteLLMAnthropicToResponsesAPIAdapter
 _ADAPTER = LiteLLMAnthropicToResponsesAPIAdapter()
 
 
-async def _immediate_message_start_stream(
+async def _deferred_responses_stream(
     responses_kwargs: Dict[str, Any], model: str
 ) -> AsyncIterator[bytes]:
     """
-    Async generator that yields message_start immediately, before waiting for upstream.
+    Defer the upstream ``aresponses`` call until this generator is first iterated.
 
-    This prevents client-side first-chunk timeout retries by sending the initial
-    SSE event as soon as the request is received.
+    The proxy layer (``async_sse_data_generator_with_immediate_start`` in
+    ``common_request_processing``) already handles the immediate first-chunk
+    ``message_start`` event needed to prevent client timeouts, so this generator
+    only needs to avoid blocking inside ``route_request``'s ``await``. Returning
+    an async generator (instead of awaiting ``aresponses`` directly in the
+    handler) defers the upstream HTTP round-trip until the proxy starts
+    streaming to the client.
     """
-    # Generate a message ID for consistency across the stream
-    message_id = f"msg_{uuid.uuid4()}"
-
-    # Immediately yield message_start event (before awaiting upstream)
-    message_start = {
-        "type": "message_start",
-        "message": {
-            "id": message_id,
-            "type": "message",
-            "role": "assistant",
-            "content": [],
-            "model": model,
-            "stop_reason": None,
-            "stop_sequence": None,
-            "usage": {
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "cache_creation_input_tokens": 0,
-                "cache_read_input_tokens": 0,
-            },
-        },
-    }
-    payload = f"event: message_start\ndata: {json.dumps(message_start)}\n\n"
-    yield payload.encode()
-
-    # Now await the upstream response (this may take time for slow backends)
     result = await litellm.aresponses(**responses_kwargs)
-
-    # Wrap the result and yield remaining events (skipping message_start since we already sent it)
-    wrapper = AnthropicResponsesStreamWrapper(
-        responses_stream=result, model=model, message_id=message_id
-    )
-    wrapper._sent_message_start = True  # Mark as already sent
-
+    wrapper = AnthropicResponsesStreamWrapper(responses_stream=result, model=model)
     async for chunk in wrapper.async_anthropic_sse_wrapper():
         yield chunk
 
@@ -193,8 +164,10 @@ class LiteLLMMessagesToResponsesAPIHandler:
         )
 
         if stream:
-            # Use immediate message_start to prevent client first-chunk timeout
-            return _immediate_message_start_stream(responses_kwargs, model)
+            # Defer the upstream call until the proxy starts iterating; the proxy
+            # layer's `async_sse_data_generator_with_immediate_start` takes care
+            # of the immediate first SSE event.
+            return _deferred_responses_stream(responses_kwargs, model)
 
         result = await litellm.aresponses(**responses_kwargs)
 

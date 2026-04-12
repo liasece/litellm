@@ -21,6 +21,15 @@ class AnthropicResponsesStreamWrapper:
       response.function_call_arguments.delta -> content_block_delta (input_json_delta)
       response.output_item.done          -> content_block_stop
       response.completed                 -> message_delta + message_stop
+
+    Note: Some upstream providers skip ``response.output_item.added`` and jump
+    straight to delta events.  The ``_ensure_block_for_item`` helper lazily
+    emits a ``content_block_start`` the first time an unknown ``item_id``
+    appears in a delta, so the Anthropic event sequence stays valid regardless.
+
+    See also:
+        - OpenAI Responses API streaming: https://platform.openai.com/docs/api-reference/responses-streaming
+        - Anthropic Messages streaming: https://docs.anthropic.com/en/api/messages-streaming
     """
 
     def __init__(
@@ -67,6 +76,58 @@ class AnthropicResponsesStreamWrapper:
         self._current_block_index += 1
         return self._current_block_index
 
+    def _ensure_block_for_item(self, item_id: str | None, block_type: str) -> int:
+        """Return the block index for *item_id*, lazily emitting ``content_block_start`` if needed.
+
+        Some upstream providers skip ``response.output_item.added`` and jump
+        straight to delta events.  When that happens we must synthesise the
+        ``content_block_start`` event here so the Anthropic client sees the
+        correct sequence.
+
+        Args:
+            item_id: The Responses API ``item_id`` from the delta event.
+            block_type: One of ``"text"``, ``"thinking"``, or ``"tool_use"``.
+
+        Returns:
+            The ``content_block_index`` to use for subsequent delta / stop events.
+        """
+        if item_id and item_id in self._item_id_to_block_index:
+            return self._item_id_to_block_index[item_id]
+
+        # First delta for this item_id — need to emit content_block_start.
+        block_idx = self._next_block_index()
+        if item_id:
+            self._item_id_to_block_index[item_id] = block_idx
+
+        if block_type == "thinking":
+            content_block: Dict[str, Any] = {"type": "thinking", "thinking": ""}
+        elif block_type == "tool_use":
+            call_id = self._pending_tool_ids.get(item_id or "", "")
+            content_block = {
+                "type": "tool_use",
+                "id": call_id,
+                "name": "",
+                "input": {},
+            }
+        else:
+            content_block = {"type": "text", "text": ""}
+
+        verbose_logger.warning(
+            "AnthropicResponsesStreamWrapper: synthesising content_block_start "
+            "for item_id=%s block_type=%s (upstream skipped output_item.added)",
+            item_id,
+            block_type,
+        )
+
+        self._chunk_queue.append(
+            {
+                "type": "content_block_start",
+                "index": block_idx,
+                "content_block": content_block,
+            }
+        )
+        return block_idx
+
     def _process_event(self, event: Any) -> None:  # noqa: PLR0915
         """Convert one Responses API event into zero or more Anthropic chunks queued for emission."""
         event_type = getattr(event, "type", None)
@@ -76,10 +137,28 @@ class AnthropicResponsesStreamWrapper:
         if event_type is None:
             return
 
+        # Normalize enum values (e.g. ResponsesAPIStreamEvents.RESPONSE_CREATED)
+        # to plain strings so the downstream comparisons work uniformly.
+        event_type = str(event_type)
+        if "." not in event_type:
+            # Already a plain string like "response.created"
+            pass
+        elif event_type.startswith("ResponsesAPIStreamEvents."):
+            # e.g. "ResponsesAPIStreamEvents.RESPONSE_CREATED" — extract the
+            # human-readable value that sits after ": " or use the raw value
+            # from the enum's .value attribute.
+            raw_value = getattr(getattr(event, "type", None), "value", None)
+            if raw_value:
+                event_type = str(raw_value)
+
         # ---- message_start ----
         if event_type == "response.created":
-            self._sent_message_start = True
-            self._chunk_queue.append(self._make_message_start())
+            # Guard against double emission: __anext__'s fallback branch may
+            # have already emitted a message_start before the first upstream
+            # event was consumed. Only emit here if it has not been sent yet.
+            if not self._sent_message_start:
+                self._sent_message_start = True
+                self._chunk_queue.append(self._make_message_start())
             return
 
         # ---- content_block_start for a new output message item ----
@@ -155,11 +234,7 @@ class AnthropicResponsesStreamWrapper:
             delta = getattr(event, "delta", "") or (
                 event.get("delta", "") if isinstance(event, dict) else ""
             )
-            block_idx = (
-                self._item_id_to_block_index.get(item_id, self._current_block_index)
-                if item_id
-                else self._current_block_index
-            )
+            block_idx = self._ensure_block_for_item(item_id, "text")
             self._chunk_queue.append(
                 {
                     "type": "content_block_delta",
@@ -177,11 +252,7 @@ class AnthropicResponsesStreamWrapper:
             delta = getattr(event, "delta", "") or (
                 event.get("delta", "") if isinstance(event, dict) else ""
             )
-            block_idx = (
-                self._item_id_to_block_index.get(item_id, self._current_block_index)
-                if item_id
-                else self._current_block_index
-            )
+            block_idx = self._ensure_block_for_item(item_id, "thinking")
             self._chunk_queue.append(
                 {
                     "type": "content_block_delta",
@@ -199,11 +270,7 @@ class AnthropicResponsesStreamWrapper:
             delta = getattr(event, "delta", "") or (
                 event.get("delta", "") if isinstance(event, dict) else ""
             )
-            block_idx = (
-                self._item_id_to_block_index.get(item_id, self._current_block_index)
-                if item_id
-                else self._current_block_index
-            )
+            block_idx = self._ensure_block_for_item(item_id, "tool_use")
             self._chunk_queue.append(
                 {
                     "type": "content_block_delta",
@@ -224,11 +291,7 @@ class AnthropicResponsesStreamWrapper:
                 if item
                 else None
             )
-            block_idx = (
-                self._item_id_to_block_index.get(item_id, self._current_block_index)
-                if item_id
-                else self._current_block_index
-            )
+            block_idx = self._ensure_block_for_item(item_id, "text")
             self._chunk_queue.append(
                 {
                     "type": "content_block_stop",
@@ -301,6 +364,23 @@ class AnthropicResponsesStreamWrapper:
             self._sent_message_stop = True
             return
 
+        # ---- unhandled event types (e.g. response.output_text.done) ----
+        # Silently skip known informational events; warn on truly unknown ones.
+        _KNOWN_SKIP_EVENTS = frozenset({
+            "response.output_text.done",
+            "response.content_part.added",
+            "response.content_part.done",
+            "response.output_text.annotation.added",
+            "response.reasoning_summary_text.done",
+            "response.function_call_arguments.done",
+            "response.in_progress",
+        })
+        if event_type not in _KNOWN_SKIP_EVENTS:
+            verbose_logger.warning(
+                "AnthropicResponsesStreamWrapper: unhandled event_type=%s",
+                event_type,
+            )
+
     def __aiter__(self) -> "AnthropicResponsesStreamWrapper":
         return self
 
@@ -343,3 +423,23 @@ class AnthropicResponsesStreamWrapper:
                 yield payload.encode()
             else:
                 yield chunk
+
+        # Defensive: if the upstream stream ended without emitting
+        # message_delta + message_stop (e.g. upstream error, early
+        # disconnect, or missing response.completed event), synthesise
+        # them so the Anthropic client sees a complete event sequence
+        # and does not trigger a non-streaming fallback retry.
+        if not self._sent_message_stop:
+            verbose_logger.warning(
+                "AnthropicResponsesStreamWrapper: stream ended without "
+                "message_stop — synthesising termination events"
+            )
+            fallback_delta = {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                "usage": {"input_tokens": 0, "output_tokens": 0},
+            }
+            fallback_stop = {"type": "message_stop"}
+            yield f"event: message_delta\ndata: {json.dumps(fallback_delta)}\n\n".encode()
+            yield f"event: message_stop\ndata: {json.dumps(fallback_stop)}\n\n".encode()
+            self._sent_message_stop = True

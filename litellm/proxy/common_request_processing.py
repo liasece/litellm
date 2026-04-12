@@ -64,6 +64,14 @@ else:
 from litellm.proxy.litellm_pre_call_utils import add_litellm_data_to_request
 from litellm.types.utils import ModelResponse, ModelResponseStream, Usage
 
+# Idle-timeout window between SSE chunks before
+# ``async_sse_data_generator_with_immediate_start`` emits a keep-alive ping.
+# Tuned below typical Anthropic SDK client idle timeouts (~6s) so the client
+# never sees a long silent gap that would trigger a duplicate request retry
+# while the upstream model is still processing a large prompt.
+_KEEPALIVE_INTERVAL_SECONDS: float = 2.0
+_KEEPALIVE_PING_FRAME: str = 'event: ping\ndata: {"type": "ping"}\n\n'
+
 
 async def _parse_event_data_for_error(event_line: Union[str, bytes]) -> Optional[int]:
     """Parses an event line and returns an error code if present, else None."""
@@ -1771,22 +1779,79 @@ class ProxyBaseLLMRequestProcessing:
         }
         yield f"event: message_start\ndata: {json.dumps(message_start)}\n\n"
 
-        # Now yield the rest of the stream, skipping any message_start from upstream
+        # Now yield the rest of the stream, skipping any message_start from upstream.
+        #
+        # Stream silence between events would otherwise let the client (e.g. Claude
+        # Code's Anthropic SDK) hit its idle timeout and re-issue the request, so
+        # we wrap the upstream iteration in an ``asyncio.wait_for`` race that emits
+        # an Anthropic ``ping`` SSE frame every ``_KEEPALIVE_INTERVAL_SECONDS`` of
+        # silence. Empirically the client retries about 6s after the last byte, so
+        # 2s gives a comfortable safety margin without flooding the connection.
+        upstream_aiter = (
+            ProxyBaseLLMRequestProcessing.async_streaming_data_generator(
+                response=response,
+                user_api_key_dict=user_api_key_dict,
+                request_data=request_data,
+                proxy_logging_obj=proxy_logging_obj,
+                serialize_chunk=ProxyBaseLLMRequestProcessing.return_sse_chunk,
+                serialize_error=lambda proxy_exc: f"{STREAM_SSE_DATA_PREFIX}{json.dumps({'error': proxy_exc.to_dict()})}\n\n",
+            )
+        ).__aiter__()
+
         first_chunk_seen = False
-        async for chunk in ProxyBaseLLMRequestProcessing.async_streaming_data_generator(
-            response=response,
-            user_api_key_dict=user_api_key_dict,
-            request_data=request_data,
-            proxy_logging_obj=proxy_logging_obj,
-            serialize_chunk=ProxyBaseLLMRequestProcessing.return_sse_chunk,
-            serialize_error=lambda proxy_exc: f"{STREAM_SSE_DATA_PREFIX}{json.dumps({'error': proxy_exc.to_dict()})}\n\n",
-        ):
-            # Skip the first message_start from upstream since we already sent one
-            if not first_chunk_seen:
-                first_chunk_seen = True
-                if isinstance(chunk, str) and "message_start" in chunk:
+        next_task: Optional[asyncio.Task] = None
+        try:
+            while True:
+                if next_task is None:
+                    next_task = asyncio.ensure_future(upstream_aiter.__anext__())
+                try:
+                    chunk = await asyncio.wait_for(
+                        asyncio.shield(next_task),
+                        timeout=_KEEPALIVE_INTERVAL_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    # Upstream still working — emit a keep-alive ping and keep
+                    # awaiting the SAME ``next_task`` (do not recreate it, that
+                    # would lose the in-flight ``__anext__`` result).
+                    # ``shield`` keeps the inner task alive across the
+                    # ``wait_for`` cancellation so this loop can keep waiting.
+                    yield _KEEPALIVE_PING_FRAME
                     continue
-            yield chunk
+                except StopAsyncIteration:
+                    next_task = None
+                    break
+
+                next_task = None
+
+                # Skip the first message_start from upstream since we already sent
+                # one. Upstream chunks may be str (e.g. dict serialized by
+                # return_sse_chunk) or bytes (passthrough handler /
+                # responses_adapters wrapper encode to bytes).
+                if not first_chunk_seen:
+                    first_chunk_seen = True
+                    if isinstance(chunk, str):
+                        if "message_start" in chunk:
+                            continue
+                    elif isinstance(chunk, (bytes, bytearray)):
+                        if b"message_start" in chunk:
+                            continue
+                    else:
+                        verbose_proxy_logger.error(
+                            "First chunk is not a string/bytes, cannot check for message_start - chunk: %s",
+                            chunk,
+                        )
+                yield chunk
+        finally:
+            # If the client disconnects mid-stream the generator is closed and
+            # we must release the in-flight ``__anext__`` task. ``cancel()``
+            # alone only requests cancellation; ``await`` lets the cancellation
+            # actually propagate so the task does not linger in the event loop.
+            if next_task is not None and not next_task.done():
+                next_task.cancel()
+                try:
+                    await next_task
+                except (asyncio.CancelledError, StopAsyncIteration, Exception):
+                    pass
 
     @staticmethod
     def _process_chunk_with_cost_injection(chunk: Any, model_name: str) -> Any:
