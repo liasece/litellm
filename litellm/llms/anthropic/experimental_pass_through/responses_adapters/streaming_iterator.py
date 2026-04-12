@@ -94,6 +94,25 @@ class AnthropicResponsesStreamWrapper:
         if item_id and item_id in self._item_id_to_block_index:
             return self._item_id_to_block_index[item_id]
 
+        # tool_use blocks require a name in content_block_start.  When the
+        # upstream skipped output_item.added we don't have the name, so we
+        # must NOT synthesise a content_block_start with an empty name —
+        # clients (e.g. Claude Code) validate the name and reject it.
+        # Fall back to _current_block_index (pre-_ensure_block_for_item
+        # behaviour) which lets the client collect deltas loosely.
+        if block_type == "tool_use":
+            block_idx = self._current_block_index
+            if item_id:
+                self._item_id_to_block_index[item_id] = block_idx
+            verbose_logger.warning(
+                "AnthropicResponsesStreamWrapper: skipping content_block_start "
+                "for item_id=%s block_type=tool_use (no name available, "
+                "falling back to block_idx=%s)",
+                item_id,
+                block_idx,
+            )
+            return block_idx
+
         # First delta for this item_id — need to emit content_block_start.
         block_idx = self._next_block_index()
         if item_id:
@@ -101,14 +120,6 @@ class AnthropicResponsesStreamWrapper:
 
         if block_type == "thinking":
             content_block: Dict[str, Any] = {"type": "thinking", "thinking": ""}
-        elif block_type == "tool_use":
-            call_id = self._pending_tool_ids.get(item_id or "", "")
-            content_block = {
-                "type": "tool_use",
-                "id": call_id,
-                "name": "",
-                "input": {},
-            }
         else:
             content_block = {"type": "text", "text": ""}
 
