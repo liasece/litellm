@@ -31,6 +31,7 @@ from litellm.constants import (
     STREAM_SSE_DATA_PREFIX,
 )
 from litellm.integrations.custom_guardrail import CustomGuardrail
+from litellm.integrations.websearch_interception.tools import is_web_search_tool
 from litellm.litellm_core_utils.dd_tracing import tracer
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.litellm_core_utils.llm_response_utils.get_headers import (
@@ -71,6 +72,61 @@ from litellm.types.utils import ModelResponse, ModelResponseStream, Usage
 # while the upstream model is still processing a large prompt.
 _KEEPALIVE_INTERVAL_SECONDS: float = 2.0
 _KEEPALIVE_PING_FRAME: str = 'event: ping\ndata: {"type": "ping"}\n\n'
+
+
+def _apply_websearch_override_target_model(
+    *,
+    data: dict,
+    route_type: Literal[
+        "acompletion",
+        "atext_completion",
+        "audio_transcriptions",
+        "audio_speech",
+        "amoderation",
+        "aimage_generation",
+        "rerank",
+        "atranscription",
+        "aspeech",
+        "anthropic_messages",
+    ],
+    general_settings: dict,
+) -> dict:
+    """Override model early for pure web_search Anthropic /v1/messages requests."""
+    if route_type != "anthropic_messages":
+        return data
+
+    target_model = general_settings.get("websearch_override_target_model")
+    if not target_model:
+        return data
+
+    tools = data.get("tools")
+    if not tools or not isinstance(tools, list):
+        return data
+
+    has_websearch = any(is_web_search_tool(t) for t in tools)
+    if not has_websearch:
+        return data
+
+    has_not_websearch = any(not is_web_search_tool(t) for t in tools)
+    if has_not_websearch:
+        return data
+
+
+    tool_choice = data.get("tool_choice")
+    if not isinstance(tool_choice, dict):
+        return data
+    if tool_choice.get("type") != "tool" or tool_choice.get("name") != "web_search":
+        return data
+
+    original_model = data.get("model", "?")
+    verbose_proxy_logger.warning(
+        "WebSearchInterception: Rewriting model from "
+        f"{original_model} to {target_model} "
+        "(web_search tool detected, target_model configured)"
+    )
+
+    data["model"] = target_model
+    return data
 
 
 async def _parse_event_data_for_error(event_line: Union[str, bytes]) -> Optional[int]:
@@ -717,6 +773,12 @@ class ProxyBaseLLMRequestProcessing:
             and self.data["model"] in user_api_key_dict.aliases
         ):
             self.data["model"] = user_api_key_dict.aliases[self.data["model"]]
+
+        self.data = _apply_websearch_override_target_model(
+            data=self.data,
+            route_type=route_type,
+            general_settings=general_settings,
+        )
 
         self.data["litellm_call_id"] = request.headers.get(
             "x-litellm-call-id", str(uuid.uuid4())

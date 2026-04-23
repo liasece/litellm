@@ -189,6 +189,221 @@ class TestProxyBaseLLMRequestProcessing:
         assert "model_list" not in router_settings_override
 
     @pytest.mark.asyncio
+    async def test_common_processing_pre_call_logic_overrides_model_for_pure_websearch_anthropic_messages(
+        self, monkeypatch
+    ):
+        processing_obj = ProxyBaseLLMRequestProcessing(
+            data={
+                "model": "claude-sonnet-4-6",
+                "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+                "tool_choice": {"type": "tool", "name": "web_search"},
+            }
+        )
+        mock_request = MagicMock(spec=Request)
+        mock_request.headers = {}
+
+        async def mock_add_litellm_data_to_request(*args, **kwargs):
+            return copy.deepcopy(processing_obj.data)
+
+        mock_proxy_logging_obj = MagicMock(spec=ProxyLogging)
+        mock_proxy_logging_obj.pre_call_hook = AsyncMock(side_effect=lambda **kwargs: kwargs["data"])
+        monkeypatch.setattr(
+            litellm.proxy.common_request_processing,
+            "add_litellm_data_to_request",
+            mock_add_litellm_data_to_request,
+        )
+
+        mock_general_settings = {
+            "litellm_settings": {"websearch_override_target_model": "gpt-5-4-mini"}
+        }
+        mock_user_api_key_dict = MagicMock(spec=UserAPIKeyAuth)
+        mock_user_api_key_dict.aliases = {}
+        mock_proxy_config = MagicMock(spec=ProxyConfig)
+
+        returned_data, _ = await processing_obj.common_processing_pre_call_logic(
+            request=mock_request,
+            general_settings=mock_general_settings,
+            user_api_key_dict=mock_user_api_key_dict,
+            proxy_logging_obj=mock_proxy_logging_obj,
+            proxy_config=mock_proxy_config,
+            route_type="anthropic_messages",
+        )
+
+        assert returned_data["model"] == "gpt-5-4-mini"
+
+    @pytest.mark.asyncio
+    async def test_common_processing_pre_call_logic_skips_override_for_mixed_tools(
+        self, monkeypatch
+    ):
+        processing_obj = ProxyBaseLLMRequestProcessing(
+            data={
+                "model": "claude-sonnet-4-6",
+                "tools": [
+                    {"type": "web_search_20250305", "name": "web_search"},
+                    {"type": "function", "name": "other_tool"},
+                ],
+                "tool_choice": {"type": "tool", "name": "web_search"},
+            }
+        )
+        mock_request = MagicMock(spec=Request)
+        mock_request.headers = {}
+
+        async def mock_add_litellm_data_to_request(*args, **kwargs):
+            return copy.deepcopy(processing_obj.data)
+
+        mock_proxy_logging_obj = MagicMock(spec=ProxyLogging)
+        mock_proxy_logging_obj.pre_call_hook = AsyncMock(side_effect=lambda **kwargs: kwargs["data"])
+        monkeypatch.setattr(
+            litellm.proxy.common_request_processing,
+            "add_litellm_data_to_request",
+            mock_add_litellm_data_to_request,
+        )
+
+        mock_general_settings = {
+            "litellm_settings": {"websearch_override_target_model": "gpt-5-4-mini"}
+        }
+        mock_user_api_key_dict = MagicMock(spec=UserAPIKeyAuth)
+        mock_user_api_key_dict.aliases = {}
+        mock_proxy_config = MagicMock(spec=ProxyConfig)
+
+        returned_data, _ = await processing_obj.common_processing_pre_call_logic(
+            request=mock_request,
+            general_settings=mock_general_settings,
+            user_api_key_dict=mock_user_api_key_dict,
+            proxy_logging_obj=mock_proxy_logging_obj,
+            proxy_config=mock_proxy_config,
+            route_type="anthropic_messages",
+        )
+
+        assert returned_data["model"] == "claude-sonnet-4-6"
+
+    @pytest.mark.asyncio
+    async def test_common_processing_pre_call_logic_skips_override_for_wrong_route(
+        self, monkeypatch
+    ):
+        processing_obj = ProxyBaseLLMRequestProcessing(
+            data={
+                "model": "claude-sonnet-4-6",
+                "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+                "tool_choice": {"type": "tool", "name": "web_search"},
+            }
+        )
+        mock_request = MagicMock(spec=Request)
+        mock_request.headers = {}
+
+        async def mock_add_litellm_data_to_request(*args, **kwargs):
+            return copy.deepcopy(processing_obj.data)
+
+        mock_proxy_logging_obj = MagicMock(spec=ProxyLogging)
+        mock_proxy_logging_obj.pre_call_hook = AsyncMock(side_effect=lambda **kwargs: kwargs["data"])
+        monkeypatch.setattr(
+            litellm.proxy.common_request_processing,
+            "add_litellm_data_to_request",
+            mock_add_litellm_data_to_request,
+        )
+
+        mock_general_settings = {
+            "litellm_settings": {"websearch_override_target_model": "gpt-5-4-mini"}
+        }
+        mock_user_api_key_dict = MagicMock(spec=UserAPIKeyAuth)
+        mock_user_api_key_dict.aliases = {}
+        mock_proxy_config = MagicMock(spec=ProxyConfig)
+
+        returned_data, _ = await processing_obj.common_processing_pre_call_logic(
+            request=mock_request,
+            general_settings=mock_general_settings,
+            user_api_key_dict=mock_user_api_key_dict,
+            proxy_logging_obj=mock_proxy_logging_obj,
+            proxy_config=mock_proxy_config,
+            route_type="acompletion",
+        )
+
+        assert returned_data["model"] == "claude-sonnet-4-6"
+
+    @pytest.mark.asyncio
+    async def test_common_processing_pre_call_logic_skips_override_without_tool_choice(
+        self, monkeypatch
+    ):
+        processing_obj = ProxyBaseLLMRequestProcessing(
+            data={
+                "model": "claude-sonnet-4-6",
+                "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+            }
+        )
+        mock_request = MagicMock(spec=Request)
+        mock_request.headers = {}
+
+        async def mock_add_litellm_data_to_request(*args, **kwargs):
+            return copy.deepcopy(processing_obj.data)
+
+        mock_proxy_logging_obj = MagicMock(spec=ProxyLogging)
+        mock_proxy_logging_obj.pre_call_hook = AsyncMock(side_effect=lambda **kwargs: kwargs["data"])
+        monkeypatch.setattr(
+            litellm.proxy.common_request_processing,
+            "add_litellm_data_to_request",
+            mock_add_litellm_data_to_request,
+        )
+
+        mock_general_settings = {
+            "litellm_settings": {"websearch_override_target_model": "gpt-5-4-mini"}
+        }
+        mock_user_api_key_dict = MagicMock(spec=UserAPIKeyAuth)
+        mock_user_api_key_dict.aliases = {}
+        mock_proxy_config = MagicMock(spec=ProxyConfig)
+
+        returned_data, _ = await processing_obj.common_processing_pre_call_logic(
+            request=mock_request,
+            general_settings=mock_general_settings,
+            user_api_key_dict=mock_user_api_key_dict,
+            proxy_logging_obj=mock_proxy_logging_obj,
+            proxy_config=mock_proxy_config,
+            route_type="anthropic_messages",
+        )
+
+        assert returned_data["model"] == "claude-sonnet-4-6"
+
+    @pytest.mark.asyncio
+    async def test_common_processing_pre_call_logic_skips_override_without_config(
+        self, monkeypatch
+    ):
+        processing_obj = ProxyBaseLLMRequestProcessing(
+            data={
+                "model": "claude-sonnet-4-6",
+                "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+                "tool_choice": {"type": "tool", "name": "web_search"},
+            }
+        )
+        mock_request = MagicMock(spec=Request)
+        mock_request.headers = {}
+
+        async def mock_add_litellm_data_to_request(*args, **kwargs):
+            return copy.deepcopy(processing_obj.data)
+
+        mock_proxy_logging_obj = MagicMock(spec=ProxyLogging)
+        mock_proxy_logging_obj.pre_call_hook = AsyncMock(side_effect=lambda **kwargs: kwargs["data"])
+        monkeypatch.setattr(
+            litellm.proxy.common_request_processing,
+            "add_litellm_data_to_request",
+            mock_add_litellm_data_to_request,
+        )
+
+        mock_general_settings = {}
+        mock_user_api_key_dict = MagicMock(spec=UserAPIKeyAuth)
+        mock_user_api_key_dict.aliases = {}
+        mock_proxy_config = MagicMock(spec=ProxyConfig)
+
+        returned_data, _ = await processing_obj.common_processing_pre_call_logic(
+            request=mock_request,
+            general_settings=mock_general_settings,
+            user_api_key_dict=mock_user_api_key_dict,
+            proxy_logging_obj=mock_proxy_logging_obj,
+            proxy_config=mock_proxy_config,
+            route_type="anthropic_messages",
+        )
+
+        assert returned_data["model"] == "claude-sonnet-4-6"
+
+    @pytest.mark.asyncio
     async def test_stream_timeout_header_processing(self):
         """
         Test that x-litellm-stream-timeout header gets processed and added to request data as stream_timeout.
