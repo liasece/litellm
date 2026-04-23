@@ -180,6 +180,25 @@ def _get_standard_record_attrs() -> frozenset:
 _STANDARD_RECORD_ATTRS = _get_standard_record_attrs()
 
 
+class Uvicorn2xxAccessFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        status_code = getattr(record, "status_code", None)
+
+        if not isinstance(status_code, int):
+            args = getattr(record, "args", None)
+            if isinstance(args, tuple) and len(args) >= 5:
+                candidate = args[4]
+                if isinstance(candidate, int):
+                    status_code = candidate
+                elif isinstance(candidate, str) and candidate.isdigit():
+                    status_code = int(candidate)
+
+        if not isinstance(status_code, int):
+            return True
+
+        return status_code < 200 or status_code >= 300
+
+
 class JsonFormatter(Formatter):
     def __init__(self):
         super(JsonFormatter, self).__init__()
@@ -347,35 +366,39 @@ def _initialize_loggers_with_handler(handler: logging.Handler):
         lg.propagate = False  # prevent bubbling to parent/root
 
 
-def _get_uvicorn_json_log_config():
-    """
-    Generate a uvicorn log_config dictionary that applies JSON formatting to all loggers.
-
-    This ensures that uvicorn's access logs, error logs, and all application logs
-    are formatted as JSON when json_logs is enabled.
-    """
-    json_formatter_class = "litellm._logging.JsonFormatter"
-
-    # Use the module-level log_level variable for consistency
+def _get_uvicorn_log_config(use_json_formatter: bool) -> Dict[str, Any]:
     uvicorn_log_level = log_level.upper()
+    formatter_class = "litellm._logging.JsonFormatter" if use_json_formatter else "uvicorn.logging.DefaultFormatter"
+    access_formatter_class = "litellm._logging.JsonFormatter" if use_json_formatter else "uvicorn.logging.AccessFormatter"
 
-    log_config = {
+    return {
         "version": 1,
         "disable_existing_loggers": False,
         "formatters": {
             "json": {
-                "()": json_formatter_class,
+                "()": formatter_class,
+                "fmt": "%(levelprefix)s %(message)s",
+                "use_colors": None,
             },
             "default": {
-                "()": json_formatter_class,
+                "()": formatter_class,
+                "fmt": "%(levelprefix)s %(message)s",
+                "use_colors": None,
             },
             "access": {
-                "()": json_formatter_class,
+                "()": access_formatter_class,
+                "fmt": '%(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s',
+                "use_colors": None,
+            },
+        },
+        "filters": {
+            "uvicorn_2xx_access_filter": {
+                "()": "litellm._logging.Uvicorn2xxAccessFilter",
             },
         },
         "handlers": {
             "default": {
-                "formatter": "json",
+                "formatter": "json" if use_json_formatter else "default",
                 "class": "logging.StreamHandler",
                 "stream": "ext://sys.stdout",
             },
@@ -383,6 +406,7 @@ def _get_uvicorn_json_log_config():
                 "formatter": "access",
                 "class": "logging.StreamHandler",
                 "stream": "ext://sys.stdout",
+                "filters": ["uvicorn_2xx_access_filter"],
             },
         },
         "loggers": {
@@ -404,7 +428,15 @@ def _get_uvicorn_json_log_config():
         },
     }
 
-    return log_config
+
+def _get_uvicorn_json_log_config():
+    """
+    Generate a uvicorn log_config dictionary that applies JSON formatting to all loggers.
+
+    This ensures that uvicorn's access logs, error logs, and all application logs
+    are formatted as JSON when json_logs is enabled.
+    """
+    return _get_uvicorn_log_config(use_json_formatter=True)
 
 
 def _turn_on_json():

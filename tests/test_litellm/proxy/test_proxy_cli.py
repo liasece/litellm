@@ -92,6 +92,13 @@ class TestProxyInitializationHelpers:
         assert args["app"] == "litellm.proxy.proxy_server:app"
         assert args["host"] == "localhost"
         assert args["port"] == 8000
+        assert args["log_config"] is not None
+        assert isinstance(args["log_config"], dict)
+        assert "uvicorn_2xx_access_filter" in args["log_config"]["filters"]
+        assert (
+            "uvicorn_2xx_access_filter"
+            in args["log_config"]["handlers"]["access"]["filters"]
+        )
 
         # Test with log_config
         args = ProxyInitializationHelpers._get_default_unvicorn_init_args(
@@ -109,6 +116,12 @@ class TestProxyInitializationHelpers:
             assert isinstance(args["log_config"], dict)
             assert "version" in args["log_config"]
             assert "formatters" in args["log_config"]
+            assert "filters" in args["log_config"]
+            assert "uvicorn_2xx_access_filter" in args["log_config"]["filters"]
+            assert (
+                "uvicorn_2xx_access_filter"
+                in args["log_config"]["handlers"]["access"]["filters"]
+            )
 
         # Test with keepalive_timeout
         args = ProxyInitializationHelpers._get_default_unvicorn_init_args(

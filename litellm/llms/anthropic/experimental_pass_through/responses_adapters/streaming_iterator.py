@@ -123,7 +123,7 @@ class AnthropicResponsesStreamWrapper:
         else:
             content_block = {"type": "text", "text": ""}
 
-        verbose_logger.warning(
+        verbose_logger.debug(
             "AnthropicResponsesStreamWrapper: synthesising content_block_start "
             "for item_id=%s block_type=%s (upstream skipped output_item.added)",
             item_id,

@@ -16,6 +16,7 @@ from litellm import Router
 from litellm.integrations.custom_logger import CustomLogger
 from typing import Any, Dict, List
 
+from litellm.router import _should_log_fallback_exception_as_debug
 from litellm.router_utils.fallback_event_handlers import (
     run_async_fallback,
     log_success_fallback_event,
@@ -316,3 +317,60 @@ async def test_multiple_fallbacks(function_name):
         result._hidden_params["api_base"]
         == "https://exampleopenaiendpoint-production.up.railway.app/"
     )
+
+
+@pytest.mark.parametrize(
+    "exception_obj, expected",
+    [
+        (
+            litellm.BadRequestError(
+                message="bad request",
+                model="gpt-3.5-turbo",
+                llm_provider="openai",
+            ),
+            True,
+        ),
+        (
+            litellm.RateLimitError(
+                message="rate limited",
+                llm_provider="openai",
+                model="gpt-3.5-turbo",
+            ),
+            True,
+        ),
+        (
+            litellm.BudgetExceededError(
+                current_cost=2.0,
+                max_budget=1.0,
+            ),
+            True,
+        ),
+        (
+            litellm.AuthenticationError(
+                message="bad auth",
+                llm_provider="openai",
+                model="gpt-3.5-turbo",
+            ),
+            True,
+        ),
+        (
+            litellm.ContentPolicyViolationError(
+                message="policy violation",
+                model="gpt-3.5-turbo",
+                llm_provider="openai",
+            ),
+            True,
+        ),
+        (
+            litellm.InternalServerError(
+                message="server error",
+                llm_provider="openai",
+                model="gpt-3.5-turbo",
+            ),
+            False,
+        ),
+        (ValueError("boom"), False),
+    ],
+)
+def test_should_log_fallback_exception_as_debug(exception_obj, expected):
+    assert _should_log_fallback_exception_as_debug(exception_obj) is expected

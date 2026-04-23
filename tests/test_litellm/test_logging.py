@@ -16,6 +16,8 @@ import litellm
 from litellm._logging import (
     ALL_LOGGERS,
     JsonFormatter,
+    Uvicorn2xxAccessFilter,
+    _get_uvicorn_log_config,
     _initialize_loggers_with_handler,
     _turn_on_json,
     verbose_logger,
@@ -175,6 +177,59 @@ def test_json_formatter_parses_embedded_python_dict_repr():
     assert "model_info" in obj
     assert obj["model_info"]["id"] == "a624b057aec64ada48311"
     assert obj["model_info"]["db_model"] is False
+
+
+@pytest.mark.parametrize(
+    "status_code, expected",
+    [
+        (200, False),
+        (201, False),
+        (204, False),
+        (400, True),
+        (404, True),
+        (429, True),
+        (500, True),
+    ],
+)
+def test_uvicorn_2xx_access_filter_filters_success_statuses(status_code, expected):
+    record = logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg='%s - "%s %s HTTP/%s" %d',
+        args=("127.0.0.1:1234", "POST", "/v1/messages", "1.1", status_code),
+        exc_info=None,
+    )
+
+    assert Uvicorn2xxAccessFilter().filter(record) is expected
+
+
+def test_uvicorn_2xx_access_filter_keeps_unparseable_records():
+    record = logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg="unstructured access log",
+        args=(),
+        exc_info=None,
+    )
+
+    assert Uvicorn2xxAccessFilter().filter(record) is True
+
+
+def test_get_uvicorn_log_config_applies_access_filter_for_both_modes():
+    default_config = _get_uvicorn_log_config(use_json_formatter=False)
+    json_config = _get_uvicorn_log_config(use_json_formatter=True)
+
+    for config in (default_config, json_config):
+        assert "uvicorn_2xx_access_filter" in config["filters"]
+        assert config["loggers"]["uvicorn.access"]["handlers"] == ["access"]
+        assert (
+            "uvicorn_2xx_access_filter"
+            in config["handlers"]["access"]["filters"]
+        )
 
 
 def test_initialize_loggers_with_handler_sets_propagate_false():

@@ -207,7 +207,6 @@ else:
 class RoutingArgs(enum.Enum):
     ttl = 60  # 1min (RPM/TPM expire key)
 
-
 class Router:
     model_names: set = set()
     cache_responses: Optional[bool] = False
@@ -5420,7 +5419,7 @@ class Router:
                 return response
         except Exception as new_exception:
             parent_otel_span = _get_parent_otel_span_from_kwargs(kwargs)
-            verbose_router_logger.error(
+            verbose_router_logger.debug(
                 "litellm.router.py::async_function_with_fallbacks() - Error occurred while trying to do fallbacks - {}\n{}\n\nDebug Information:\nCooldown Deployments={}".format(
                     str(new_exception),
                     traceback.format_exc(),
