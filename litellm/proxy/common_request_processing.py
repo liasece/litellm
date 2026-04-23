@@ -1805,6 +1805,50 @@ class ProxyBaseLLMRequestProcessing:
             yield chunk
 
     @staticmethod
+    def _is_pure_anthropic_message_start_sse_chunk(
+        chunk: Any,
+    ) -> bool:
+        """
+        Return True only when ``chunk`` is a single complete Anthropic SSE frame
+        whose payload type is exactly ``message_start``.
+
+        Be conservative: if the chunk contains multiple SSE frames, is partially
+        formed, cannot be decoded, or cannot be parsed as JSON, return False so
+        the caller preserves the chunk instead of accidentally dropping content
+        events that happen to share the same network chunk.
+        """
+        if not isinstance(chunk, (str, bytes, bytearray)):
+            return False
+
+        if isinstance(chunk, str):
+            chunk_str = chunk
+        else:
+            try:
+                chunk_str = bytes(chunk).decode("utf-8")
+            except UnicodeDecodeError:
+                return False
+
+        frames = [frame.strip() for frame in chunk_str.split("\n\n") if frame.strip()]
+        if len(frames) != 1:
+            return False
+
+        data_lines = []
+        for line in frames[0].splitlines():
+            if line.startswith("data:"):
+                data_lines.append(line[len("data:") :].lstrip())
+
+        if not data_lines:
+            return False
+
+        payload = "\n".join(data_lines)
+        try:
+            parsed_payload = json.loads(payload)
+        except (json.JSONDecodeError, TypeError):
+            return False
+
+        return isinstance(parsed_payload, dict) and parsed_payload.get("type") == "message_start"
+
+    @staticmethod
     async def async_sse_data_generator_with_immediate_start(
         response: Any,
         user_api_key_dict: UserAPIKeyAuth,
@@ -1885,23 +1929,16 @@ class ProxyBaseLLMRequestProcessing:
 
                 next_task = None
 
-                # Skip the first message_start from upstream since we already sent
-                # one. Upstream chunks may be str (e.g. dict serialized by
-                # return_sse_chunk) or bytes (passthrough handler /
-                # responses_adapters wrapper encode to bytes).
+                # Skip only a pure upstream ``message_start`` SSE frame since we
+                # already injected one. Be conservative: if the first upstream
+                # network chunk also contains ``content_block_*`` events, keep it
+                # intact instead of dropping the whole chunk.
                 if not first_chunk_seen:
                     first_chunk_seen = True
-                    if isinstance(chunk, str):
-                        if "message_start" in chunk:
-                            continue
-                    elif isinstance(chunk, (bytes, bytearray)):
-                        if b"message_start" in chunk:
-                            continue
-                    else:
-                        verbose_proxy_logger.error(
-                            "First chunk is not a string/bytes, cannot check for message_start - chunk: %s",
-                            chunk,
-                        )
+                    if ProxyBaseLLMRequestProcessing._is_pure_anthropic_message_start_sse_chunk(
+                        chunk
+                    ):
+                        continue
                 yield chunk
         finally:
             # If the client disconnects mid-stream the generator is closed and

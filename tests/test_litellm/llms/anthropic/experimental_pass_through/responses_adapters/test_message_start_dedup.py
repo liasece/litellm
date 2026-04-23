@@ -183,6 +183,71 @@ def test_proxy_skip_handles_bytes_message_start_chunk() -> None:
     )
 
 
+def test_proxy_preserves_content_block_when_first_chunk_contains_multiple_events() -> None:
+    """
+    If the first upstream network chunk contains both ``message_start`` and
+    later Anthropic SSE events, the proxy must NOT drop the whole chunk when
+    deduplicating ``message_start``. Otherwise ``content_block_start`` can be
+    lost and Claude Code falls back with ``Content block not found``.
+    """
+    upstream_combined_chunk = (
+        b'event: message_start\n'
+        b'data: {"type":"message_start","message":{"id":"msg_up"}}\n\n'
+        b'event: content_block_start\n'
+        b'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n'
+        b'event: content_block_delta\n'
+        b'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}\n\n'
+    )
+
+    async def _fake_upstream() -> AsyncIterator[bytes]:
+        yield upstream_combined_chunk
+
+    proxy_logging = MagicMock()
+    proxy_logging.async_post_call_streaming_iterator_hook = MagicMock(
+        return_value=_fake_upstream()
+    )
+    proxy_logging.async_post_call_streaming_hook = AsyncMock(
+        side_effect=lambda response, **_kw: response
+    )
+
+    user_api_key_dict = MagicMock()
+    request_data = {"model": "claude-test"}
+
+    async def _drain() -> List[Any]:
+        gen = ProxyBaseLLMRequestProcessing.async_sse_data_generator_with_immediate_start(
+            response=_fake_upstream(),
+            user_api_key_dict=user_api_key_dict,
+            request_data=request_data,
+            proxy_logging_obj=proxy_logging,
+        )
+        return [chunk async for chunk in gen]
+
+    chunks = asyncio.run(_drain())
+
+    proxy_injected = [
+        c
+        for c in chunks
+        if isinstance(c, str) and c.startswith("event: message_start")
+    ]
+    assert len(proxy_injected) == 1
+
+    combined_chunks = [c for c in chunks if c == upstream_combined_chunk]
+    assert len(combined_chunks) == 1, (
+        "When the first upstream chunk contains message_start plus later content "
+        "events, the proxy must preserve the chunk instead of dropping it wholesale."
+    )
+
+    assert any(
+        isinstance(c, (bytes, bytearray)) and b"event: content_block_start" in c
+        for c in chunks
+    ), "content_block_start must survive first-chunk dedup"
+    assert any(
+        isinstance(c, (bytes, bytearray)) and b"event: content_block_delta" in c
+        for c in chunks
+    ), "content_block_delta must survive first-chunk dedup"
+
+
+
 def test_proxy_emits_keepalive_ping_during_upstream_silence() -> None:
     """
     When upstream stalls between chunks for longer than
