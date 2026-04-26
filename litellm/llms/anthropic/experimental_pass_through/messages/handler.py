@@ -347,6 +347,29 @@ def anthropic_messages_handler(
         api_key=litellm_params.api_key,
     )
 
+    # DeepSeek requires every assistant message to carry a thinking
+    # block. History from other providers (Claude, GLM, etc.) may
+    # include assistant messages without one — fill in empty blocks
+    # so DeepSeek doesn't reject the request.
+    if model.startswith("deepseek-"):
+        for msg in messages:
+            if msg.get("role") != "assistant":
+                continue
+            content = msg.get("content")
+            if isinstance(content, list):
+                if not any(
+                    b.get("type") in ("thinking", "redacted_thinking")
+                    for b in content
+                ):
+                    content.append(
+                        {"type": "thinking", "thinking": "", "signature": ""}
+                    )
+            elif isinstance(content, str):
+                msg["content"] = [
+                    {"type": "text", "text": content},
+                    {"type": "thinking", "thinking": "", "signature": ""},
+                ]
+
     # Store agentic loop params in logging object for agentic hooks
     # This provides original request context needed for follow-up calls
     if litellm_logging_obj is not None:
