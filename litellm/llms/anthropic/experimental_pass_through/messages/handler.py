@@ -285,6 +285,114 @@ def validate_anthropic_api_metadata(metadata: Optional[Dict] = None) -> Optional
     return anthropic_metadata_obj.model_dump(exclude_none=True)
 
 
+def _normalize_messages_for_deepseek(messages: List[Dict]) -> None:
+    """Normalize messages for DeepSeek's Anthropic-compatible endpoint.
+
+    DeepSeek requires:
+    1. No ``server_tool_use`` → convert to ``tool_use``
+    2. No ``tool_result`` inside assistant messages
+    3. All ``tool_use`` blocks must be at the END of assistant content —
+       no text blocks after any tool_use (DeepSeek rejects this with
+       "tool_use ids were found without tool_result blocks immediately after")
+
+    Strategy: for each assistant message with embedded tool_results or
+    server_tool_use, rebuild content so that:
+    - server_tool_use → tool_use
+    - tool_result blocks are extracted (moved to next user message)
+    - All tool_use blocks are moved to the END of the content array
+    - tool_results are ordered to match tool_use order
+    """
+    needs_normalize = False
+    for msg in messages:
+        if msg.get("role") != "assistant" or not isinstance(msg.get("content"), list):
+            continue
+        for block in msg["content"]:
+            if isinstance(block, dict) and block.get("type") in (
+                "server_tool_use", "tool_result"
+            ):
+                needs_normalize = True
+                break
+        if needs_normalize:
+            break
+
+    if not needs_normalize:
+        return
+
+    normalized: List[Dict] = []
+    pending_results: List[Dict] = []
+
+    for i, msg in enumerate(messages):
+        role = msg.get("role")
+
+        # Inject pending tool_results into the next user message
+        if role == "user" and pending_results:
+            content = msg.get("content")
+            if isinstance(content, list):
+                merged = list(pending_results) + list(content)
+                normalized.append({"role": "user", "content": merged})
+            else:
+                normalized.append({"role": "user", "content": list(pending_results)})
+                normalized.append(msg)
+            pending_results = []
+            continue
+
+        if role == "assistant" and isinstance(msg.get("content"), list):
+            content = msg["content"]
+            has_server_or_result = any(
+                isinstance(b, dict) and b.get("type") in ("server_tool_use", "tool_result")
+                for b in content
+            )
+            if not has_server_or_result:
+                normalized.append(msg)
+                continue
+
+            # Rebuild: text blocks first, then tool_use blocks (at end)
+            text_blocks: List[Dict] = []
+            tool_use_blocks: List[Dict] = []
+            result_blocks: List[Dict] = []
+            tool_use_ids: List[str] = []
+
+            for block in content:
+                if not isinstance(block, dict):
+                    text_blocks.append(block)
+                    continue
+                btype = block.get("type")
+                if btype == "tool_result":
+                    result_blocks.append(block)
+                elif btype == "server_tool_use":
+                    new_block = dict(block)
+                    new_block["type"] = "tool_use"
+                    tool_use_blocks.append(new_block)
+                    tool_use_ids.append(block.get("id", ""))
+                elif btype == "tool_use":
+                    tool_use_blocks.append(block)
+                    tool_use_ids.append(block.get("id", ""))
+                else:
+                    text_blocks.append(block)
+
+            # Reorder result_blocks to match tool_use_ids order
+            result_by_id = {b.get("tool_use_id", ""): b for b in result_blocks}
+            ordered_results = []
+            for uid in tool_use_ids:
+                if uid in result_by_id:
+                    ordered_results.append(result_by_id.pop(uid))
+            ordered_results.extend(result_by_id.values())
+
+            # Build new content: text first, tool_use at end
+            new_content = text_blocks + tool_use_blocks
+            normalized.append({"role": "assistant", "content": new_content})
+            pending_results = ordered_results
+            continue
+
+        normalized.append(msg)
+
+    # If there are still pending results at the end, append a user message
+    if pending_results:
+        normalized.append({"role": "user", "content": pending_results})
+
+    messages[:] = normalized
+
+
 def anthropic_messages_handler(
     max_tokens: int,
     messages: List[Dict],
@@ -346,6 +454,15 @@ def anthropic_messages_handler(
         api_base=litellm_params.api_base,
         api_key=litellm_params.api_key,
     )
+
+    # DeepSeek does not support Anthropic's interleaved mode where
+    # server_tool_use + tool_result blocks coexist inside assistant
+    # messages. Other providers (Claude, GLM) produce this pattern
+    # when using server-side tools (web search, MCP tools, etc.).
+    # We must extract those blocks into separate user messages and
+    # convert server_tool_use → tool_use so DeepSeek can handle them.
+    if model.startswith("deepseek-"):
+        _normalize_messages_for_deepseek(messages)
 
     # DeepSeek requires every assistant message to carry a thinking
     # block. History from other providers (Claude, GLM, etc.) may
