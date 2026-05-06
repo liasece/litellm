@@ -384,7 +384,11 @@ class LiteLLMAnthropicToResponsesAPIAdapter:
         # metadata user_id -> user
         metadata = anthropic_request.get("metadata")
         if isinstance(metadata, dict) and "user_id" in metadata:
-            responses_kwargs["user"] = str(metadata["user_id"])[:64]
+            from litellm.llms.anthropic.chat.transformation import _normalize_user_id
+
+            _normalized = _normalize_user_id(str(metadata["user_id"]))
+            if _normalized is not None:
+                responses_kwargs["user"] = _normalized[:64]
 
         return responses_kwargs
 

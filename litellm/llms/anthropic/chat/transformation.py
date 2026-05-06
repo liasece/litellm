@@ -1029,9 +1029,10 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
                 param == "user"
                 and value is not None
                 and isinstance(value, str)
-                and _valid_user_id(value)  # anthropic fails on emails
             ):
-                optional_params["metadata"] = {"user_id": value}
+                _normalized = _normalize_user_id(value)
+                if _normalized is not None:
+                    optional_params["metadata"] = {"user_id": _normalized}
             elif param == "thinking":
                 optional_params["thinking"] = value
             elif param == "reasoning_effort" and isinstance(value, str):
@@ -1417,9 +1418,10 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
             and isinstance(_litellm_metadata, dict)
             and "user_id" in _litellm_metadata
             and _litellm_metadata["user_id"] is not None
-            and _valid_user_id(_litellm_metadata["user_id"])
         ):
-            optional_params["metadata"] = {"user_id": _litellm_metadata["user_id"]}
+            _normalized = _normalize_user_id(_litellm_metadata["user_id"])
+            if _normalized is not None:
+                optional_params["metadata"] = {"user_id": _normalized}
 
         # Remove internal LiteLLM parameters that should not be sent to Anthropic API
         optional_params.pop("is_vertex_request", None)
@@ -1978,17 +1980,41 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         )
 
 
-def _valid_user_id(user_id: str) -> bool:
+def _normalize_user_id(user_id: str) -> Optional[str]:
     """
-    Validate that user_id is not an email or phone number.
-    Returns: bool: True if valid (not email or phone), False otherwise
+    Normalize user_id for Anthropic API (must match ^[a-zA-Z0-9_-]+$).
+    Handles Claude Code's JSON format: {"device_id":"...","account_uuid":"...","session_id":"..."}
+    Returns None if user_id is invalid (email, phone, or unparseable).
     """
+    if not isinstance(user_id, str):
+        return None
+
     email_pattern = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
     phone_pattern = r"^\+?[\d\s\(\)-]{7,}$"
+    anthropic_pattern = r"^[a-zA-Z0-9_-]+$"
 
     if re.match(email_pattern, user_id):
-        return False
+        return None
     if re.match(phone_pattern, user_id):
-        return False
+        return None
 
-    return True
+    # Try parsing Claude Code's JSON user_id format
+    if user_id.startswith("{"):
+        try:
+            parsed = json.loads(user_id)
+            if isinstance(parsed, dict) and "device_id" in parsed:
+                reconstructed = "user_{}_account_{}_session_{}".format(
+                    parsed.get("device_id", ""),
+                    parsed.get("account_uuid", ""),
+                    parsed.get("session_id", ""),
+                )
+                if re.match(anthropic_pattern, reconstructed):
+                    return reconstructed
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Plain string: validate against Anthropic pattern
+    if re.match(anthropic_pattern, user_id):
+        return user_id
+
+    return None

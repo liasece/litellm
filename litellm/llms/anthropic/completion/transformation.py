@@ -174,8 +174,14 @@ class AnthropicTextConfig(BaseConfig):
                 optional_params["temperature"] = value
             if param == "top_p":
                 optional_params["top_p"] = value
-            if param == "user":
-                optional_params["metadata"] = {"user_id": value}
+            if param == "user" and isinstance(value, str):
+                from litellm.llms.anthropic.chat.transformation import (
+                    _normalize_user_id,
+                )
+
+                _normalized = _normalize_user_id(value)
+                if _normalized is not None:
+                    optional_params["metadata"] = {"user_id": _normalized}
 
         return optional_params
 
