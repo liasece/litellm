@@ -273,6 +273,24 @@ class AnthropicResponsesStreamWrapper:
             )
             return
 
+        # ---- reasoning text delta (Qwen3 style) ----
+        if event_type == "response.reasoning_text.delta":
+            item_id = getattr(event, "item_id", None) or (
+                event.get("item_id") if isinstance(event, dict) else None
+            )
+            delta = getattr(event, "delta", "") or (
+                event.get("delta", "") if isinstance(event, dict) else ""
+            )
+            block_idx = self._ensure_block_for_item(item_id, "thinking")
+            self._chunk_queue.append(
+                {
+                    "type": "content_block_delta",
+                    "index": block_idx,
+                    "delta": {"type": "thinking_delta", "thinking": delta},
+                }
+            )
+            return
+
         # ---- function call arguments delta ----
         if event_type == "response.function_call_arguments.delta":
             item_id = getattr(event, "item_id", None) or (
@@ -383,6 +401,9 @@ class AnthropicResponsesStreamWrapper:
             "response.content_part.done",
             "response.output_text.annotation.added",
             "response.reasoning_summary_text.done",
+            "response.reasoning_text.done",
+            "response.reasoning_part.added",
+            "response.reasoning_part.done",
             "response.function_call_arguments.done",
             "response.in_progress",
         })
