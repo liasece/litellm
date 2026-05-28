@@ -1,12 +1,18 @@
 # What is this?
 ## Translates OpenAI call to Anthropic `/v1/messages` format
 import json
+import re
 import traceback
 from collections import deque
 from typing import Any, AsyncIterator, Dict
 
 from litellm import verbose_logger
 from litellm._uuid import uuid
+
+# Pre-compiled pattern to strip UTF-16 surrogate code points (U+D800..U+DFFF).
+# Some models (e.g. Qwen) emit raw surrogates in their output which cause
+# UnicodeEncodeError when Python tries to encode them as UTF-8.
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 
 
 class AnthropicResponsesStreamWrapper:
@@ -71,6 +77,22 @@ class AnthropicResponsesStreamWrapper:
                 },
             },
         }
+
+    @staticmethod
+    def _sanitize_text(text: str) -> str:
+        """Strip UTF-16 surrogates that would cause UnicodeEncodeError on UTF-8 encoding."""
+        return _SURROGATE_RE.sub("", text)
+
+    @staticmethod
+    def _clean_surrogates(obj: Any) -> Any:
+        """Recursively strip surrogates from all strings in a data structure."""
+        if isinstance(obj, str):
+            return _SURROGATE_RE.sub("", obj)
+        if isinstance(obj, dict):
+            return {k: AnthropicResponsesStreamWrapper._clean_surrogates(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [AnthropicResponsesStreamWrapper._clean_surrogates(v) for v in obj]
+        return obj
 
     def _next_block_index(self) -> int:
         self._current_block_index += 1
@@ -250,7 +272,7 @@ class AnthropicResponsesStreamWrapper:
                 {
                     "type": "content_block_delta",
                     "index": block_idx,
-                    "delta": {"type": "text_delta", "text": delta},
+                    "delta": {"type": "text_delta", "text": self._sanitize_text(delta)},
                 }
             )
             return
@@ -268,7 +290,7 @@ class AnthropicResponsesStreamWrapper:
                 {
                     "type": "content_block_delta",
                     "index": block_idx,
-                    "delta": {"type": "thinking_delta", "thinking": delta},
+                    "delta": {"type": "thinking_delta", "thinking": self._sanitize_text(delta)},
                 }
             )
             return
@@ -286,7 +308,7 @@ class AnthropicResponsesStreamWrapper:
                 {
                     "type": "content_block_delta",
                     "index": block_idx,
-                    "delta": {"type": "thinking_delta", "thinking": delta},
+                    "delta": {"type": "thinking_delta", "thinking": self._sanitize_text(delta)},
                 }
             )
             return
@@ -304,7 +326,7 @@ class AnthropicResponsesStreamWrapper:
                 {
                     "type": "content_block_delta",
                     "index": block_idx,
-                    "delta": {"type": "input_json_delta", "partial_json": delta},
+                    "delta": {"type": "input_json_delta", "partial_json": self._sanitize_text(delta)},
                 }
             )
             return
@@ -450,8 +472,10 @@ class AnthropicResponsesStreamWrapper:
         """Yield SSE-encoded bytes for each Anthropic event chunk."""
         async for chunk in self:
             if isinstance(chunk, dict):
-                event_type: str = str(chunk.get("type", "message"))
-                payload = f"event: {event_type}\ndata: {json.dumps(chunk)}\n\n"
+                # Sanitize entire chunk to strip surrogates before JSON encoding
+                clean = self._clean_surrogates(chunk)
+                event_type: str = str(clean.get("type", "message"))
+                payload = f"event: {event_type}\ndata: {json.dumps(clean)}\n\n"
                 yield payload.encode()
             else:
                 yield chunk
